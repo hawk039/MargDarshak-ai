@@ -26,6 +26,7 @@ class WisdomEntry(Base):
     translation: Mapped[str | None] = mapped_column(Text, nullable=True)
     commentary: Mapped[str | None] = mapped_column(Text, nullable=True)
     extracted_principle: Mapped[str | None] = mapped_column(Text, nullable=True)
+    distilled_wisdom: Mapped[str | None] = mapped_column(Text, nullable=True)
     emotional_tags: Mapped[list[str]] = mapped_column(JSON, nullable=False, default=list)
     philosophical_tags: Mapped[list[str]] = mapped_column(JSON, nullable=False, default=list)
     use_cases: Mapped[list[str]] = mapped_column(JSON, nullable=False, default=list)

@@ -149,6 +149,66 @@ storage/
 ├── source_documents
 ├── exports
 └── generated_data
+
+datasets/
+├── gita
+└── metadata
+
+training/
+└── data
+```
+
+---
+
+## Datasets
+
+Training datasets are stored as versioned artifacts inside the repository so they can be tracked, reproduced, and compared over time.
+
+* Canonical dataset exports are stored under `datasets/` by source family, such as `datasets/gita/`.
+* Every dataset version gets a matching metadata note under `datasets/metadata/`.
+* The active training copy used for experiments is stored at `training/data/train.jsonl`.
+* Older dataset versions should never be overwritten. New exports should always be added as new versioned files such as `marg_darshak_gita_v4.jsonl`.
+
+---
+
+## Command Examples
+
+Reset training examples for one source document and reclaim SQLite space:
+
+```bash
+python scripts/reset_training_examples_for_source.py --source-document-id 1
+```
+
+Generate clean v2 training examples in streaming mode:
+
+```bash
+python scripts/generate_training_examples_streaming.py --source-document-id 1
+```
+
+Generate only a small test slice:
+
+```bash
+python scripts/generate_training_examples_streaming.py --source-document-id 1 --limit 10
+```
+
+Audit generated examples one by one:
+
+```bash
+python scripts/audit_training_examples_streaming.py --source-document-id 1
+```
+
+Approve only clean export candidates:
+
+```bash
+python scripts/approve_clean_examples_streaming.py --source-document-id 1
+```
+
+SQLite-safe batched alternatives:
+
+```bash
+python scripts/regenerate_training_examples_batched.py --source-document-id 1 --batch-size 50 --replace-existing
+python scripts/audit_training_examples_batched.py --source-document-id 1 --batch-size 50
+python scripts/approve_dataset_candidates.py --source-document-id 1 --batch-size 50
 ```
 
 ---

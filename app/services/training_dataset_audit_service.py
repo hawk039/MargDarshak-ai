@@ -5,7 +5,6 @@ from __future__ import annotations
 import re
 from collections import Counter
 from dataclasses import dataclass
-from difflib import SequenceMatcher
 
 from app.models.training_example import TrainingExample
 
@@ -27,11 +26,26 @@ PRACTICAL_ACTION_PATTERN = re.compile(
     r"\b(begin|notice|choose|act|return|pause|write|breathe|practice|take|start|speak|rest)\b",
     re.IGNORECASE,
 )
+SCRIPTURE_LEAKAGE_PATTERN = re.compile(
+    r"\b(the central lesson is|my bow|gandeeva|arjuna|krishna said|sanjaya)\b",
+    re.IGNORECASE,
+)
 
 OPENING_WORD_COUNT = 12
-REPEATED_OPENING_WARNING_THRESHOLD = 20
-REPEATED_OPENING_REJECTION_THRESHOLD = 40
-NEAR_DUPLICATE_SIMILARITY = 0.96
+REPEATED_OPENING_THRESHOLD = 5
+NEAR_DUPLICATE_FINGERPRINT_THRESHOLD = 2
+REPEATED_SENTENCE_THRESHOLD = 15
+MIN_SENTENCE_WORDS = 6
+
+
+@dataclass(slots=True)
+class CorpusAuditStats:
+    """Corpus-level signals used during per-row audit writes."""
+
+    opening_counts: Counter[str]
+    normalized_response_counts: Counter[str]
+    response_fingerprint_counts: Counter[str]
+    repeated_sentence_counts: Counter[str]
 
 
 @dataclass(slots=True)
@@ -48,80 +62,134 @@ class TrainingDatasetAuditResult:
 class TrainingDatasetAuditService:
     """Audit training examples for fine-tuning readiness."""
 
+    def build_corpus_stats(
+        self,
+        training_examples: list[TrainingExample],
+    ) -> CorpusAuditStats:
+        """Build corpus-level repetition signals for a batch of examples."""
+
+        rows = [(training_example.id, training_example.assistant_response) for training_example in training_examples]
+        return self.build_corpus_stats_from_rows(rows)
+
+    def build_corpus_stats_from_rows(
+        self,
+        rows: list[tuple[int, str]],
+    ) -> CorpusAuditStats:
+        """Build corpus-level repetition signals from lightweight rows."""
+
+        opening_counts: Counter[str] = Counter()
+        normalized_response_counts: Counter[str] = Counter()
+        response_fingerprint_counts: Counter[str] = Counter()
+        repeated_sentence_counts: Counter[str] = Counter()
+
+        for _, assistant_response in rows:
+            opening_phrase = self.extract_opening_phrase(assistant_response)
+            normalized_response = self._normalize_text(assistant_response)
+            response_fingerprint = self.response_fingerprint(assistant_response)
+
+            opening_counts[opening_phrase] += 1
+            normalized_response_counts[normalized_response] += 1
+            if response_fingerprint:
+                response_fingerprint_counts[response_fingerprint] += 1
+
+            for sentence_pattern in self.extract_sentence_patterns(assistant_response):
+                repeated_sentence_counts[sentence_pattern] += 1
+
+        return CorpusAuditStats(
+            opening_counts=opening_counts,
+            normalized_response_counts=normalized_response_counts,
+            response_fingerprint_counts=response_fingerprint_counts,
+            repeated_sentence_counts=repeated_sentence_counts,
+        )
+
     def audit_examples(
         self,
         training_examples: list[TrainingExample],
     ) -> list[TrainingDatasetAuditResult]:
         """Return dataset audit results for a batch of training examples."""
 
-        opening_counts = Counter(
-            self.extract_opening_phrase(training_example.assistant_response)
-            for training_example in training_examples
-        )
-        normalized_responses = {
-            training_example.id: self._normalize_text(training_example.assistant_response)
-            for training_example in training_examples
-        }
-        duplicate_counts = Counter(normalized_responses.values())
-        near_duplicate_ids = self._detect_near_duplicates(normalized_responses)
+        corpus_stats = self.build_corpus_stats(training_examples)
 
         results: list[TrainingDatasetAuditResult] = []
         for training_example in training_examples:
-            opening_phrase = self.extract_opening_phrase(training_example.assistant_response)
-            issues: list[str] = []
-            score = 100.0
-            normalized_response = normalized_responses[training_example.id]
-            word_count = len(training_example.assistant_response.split())
-
-            opening_count = opening_counts[opening_phrase]
-            if opening_count >= REPEATED_OPENING_REJECTION_THRESHOLD:
-                issues.append("repeated_opening_phrase")
-                score -= 25.0
-            elif opening_count >= REPEATED_OPENING_WARNING_THRESHOLD:
-                issues.append("opening_phrase_overused")
-                score -= 12.0
-
-            if duplicate_counts[normalized_response] > 1:
-                issues.append("duplicate_response")
-                score -= 35.0
-            elif training_example.id in near_duplicate_ids:
-                issues.append("near_duplicate_response")
-                score -= 20.0
-
-            if CORRUPTION_PATTERN.search(training_example.assistant_response):
-                issues.append("corrupted_characters")
-                score -= 40.0
-            if SOURCE_METADATA_PATTERN.search(training_example.assistant_response):
-                issues.append("source_metadata_leakage")
-                score -= 30.0
-            if word_count < 60:
-                issues.append("response_too_short")
-                score -= 20.0
-            if word_count > 180:
-                issues.append("response_too_long")
-                score -= 15.0
-            if UNSAFE_MENTAL_HEALTH_PATTERN.search(training_example.assistant_response):
-                issues.append("unsafe_mental_health_advice")
-                score -= 45.0
-            if PREACHY_PATTERN.search(training_example.assistant_response):
-                issues.append("overly_preachy_tone")
-                score -= 25.0
-            if not PRACTICAL_ACTION_PATTERN.search(training_example.assistant_response):
-                issues.append("missing_practical_action")
-                score -= 20.0
-
-            score = max(0.0, min(score, 100.0))
             results.append(
-                TrainingDatasetAuditResult(
+                self.audit_example_with_corpus(
                     training_example_id=training_example.id,
-                    dataset_quality_score=score,
-                    dataset_status=self._determine_status(score, issues),
-                    issues=issues,
-                    opening_phrase=opening_phrase,
+                    assistant_response=training_example.assistant_response,
+                    corpus_stats=corpus_stats,
                 )
             )
 
         return results
+
+    def audit_example_with_corpus(
+        self,
+        training_example_id: int,
+        assistant_response: str,
+        corpus_stats: CorpusAuditStats,
+    ) -> TrainingDatasetAuditResult:
+        """Audit one response using precomputed corpus-level repetition signals."""
+
+        opening_phrase = self.extract_opening_phrase(assistant_response)
+        normalized_response = self._normalize_text(assistant_response)
+        response_fingerprint = self.response_fingerprint(assistant_response)
+        sentence_patterns = self.extract_sentence_patterns(assistant_response)
+
+        issues: list[str] = []
+        score = 100.0
+        word_count = len(assistant_response.split())
+
+        if corpus_stats.opening_counts[opening_phrase] > REPEATED_OPENING_THRESHOLD:
+            issues.append("repeated_opening_phrase")
+            score -= 18.0
+
+        if corpus_stats.normalized_response_counts[normalized_response] > 1:
+            issues.append("duplicate_response")
+            score -= 35.0
+        elif response_fingerprint and corpus_stats.response_fingerprint_counts[response_fingerprint] > NEAR_DUPLICATE_FINGERPRINT_THRESHOLD:
+            issues.append("near_duplicate_response")
+            score -= 18.0
+
+        if any(
+            corpus_stats.repeated_sentence_counts[sentence_pattern] > REPEATED_SENTENCE_THRESHOLD
+            for sentence_pattern in sentence_patterns
+        ):
+            issues.append("repeated_sentence_pattern")
+            score -= 15.0
+
+        if CORRUPTION_PATTERN.search(assistant_response):
+            issues.append("corrupted_characters")
+            score -= 40.0
+        if SOURCE_METADATA_PATTERN.search(assistant_response):
+            issues.append("source_metadata_leakage")
+            score -= 30.0
+        if word_count < 60:
+            issues.append("response_too_short")
+            score -= 20.0
+        if word_count > 180:
+            issues.append("response_too_long")
+            score -= 15.0
+        if UNSAFE_MENTAL_HEALTH_PATTERN.search(assistant_response):
+            issues.append("unsafe_mental_health_advice")
+            score -= 45.0
+        if PREACHY_PATTERN.search(assistant_response):
+            issues.append("overly_preachy_tone")
+            score -= 25.0
+        if SCRIPTURE_LEAKAGE_PATTERN.search(assistant_response):
+            issues.append("scripture_narration_leakage")
+            score -= 40.0
+        if not PRACTICAL_ACTION_PATTERN.search(assistant_response):
+            issues.append("missing_practical_action")
+            score -= 20.0
+
+        score = max(0.0, min(score, 100.0))
+        return TrainingDatasetAuditResult(
+            training_example_id=training_example_id,
+            dataset_quality_score=score,
+            dataset_status=self._determine_status(score, issues),
+            issues=issues,
+            opening_phrase=opening_phrase,
+        )
 
     def top_rejection_reasons(
         self,
@@ -156,6 +224,27 @@ class TrainingDatasetAuditService:
         opening = " ".join(tokens[:OPENING_WORD_COUNT])
         return opening.rstrip(".,;:!?").lower()
 
+    def response_fingerprint(self, response: str) -> str:
+        """Return a coarse fingerprint from the first 40 normalized words."""
+
+        normalized_response = self._normalize_text(response)
+        if not normalized_response:
+            return ""
+        return " ".join(normalized_response.split()[:40])
+
+    def extract_sentence_patterns(self, response: str) -> list[str]:
+        """Return normalized sentence patterns suitable for corpus repetition checks."""
+
+        patterns: list[str] = []
+        for raw_sentence in re.split(r"(?<=[.!?])\s+", response):
+            normalized_sentence = self._normalize_text(raw_sentence)
+            if not normalized_sentence:
+                continue
+            if len(normalized_sentence.split()) < MIN_SENTENCE_WORDS:
+                continue
+            patterns.append(normalized_sentence)
+        return patterns
+
     def _determine_status(self, score: float, issues: list[str]) -> str:
         """Map a dataset audit score to a review status."""
 
@@ -163,11 +252,18 @@ class TrainingDatasetAuditService:
             "duplicate_response",
             "corrupted_characters",
             "unsafe_mental_health_advice",
+            "scripture_narration_leakage",
         }
         if score < 60.0 or any(issue in hard_reject_issues for issue in issues):
             return "rejected"
         if score >= 85.0 and not any(
-            issue in {"repeated_opening_phrase", "near_duplicate_response", "source_metadata_leakage"}
+            issue
+            in {
+                "repeated_opening_phrase",
+                "near_duplicate_response",
+                "repeated_sentence_pattern",
+                "source_metadata_leakage",
+            }
             for issue in issues
         ):
             return "approved"
@@ -181,23 +277,3 @@ class TrainingDatasetAuditService:
         lowered = re.sub(r"[^a-z0-9\s]", " ", lowered)
         lowered = re.sub(r"\s+", " ", lowered).strip()
         return lowered
-
-    def _detect_near_duplicates(self, normalized_responses: dict[int, str]) -> set[int]:
-        """Return training example IDs involved in near-duplicate pairs."""
-
-        near_duplicate_ids: set[int] = set()
-        items = list(normalized_responses.items())
-        for index, (left_id, left_text) in enumerate(items):
-            if len(left_text.split()) < 20:
-                continue
-            left_prefix = left_text[:36]
-            for right_id, right_text in items[index + 1 :]:
-                if abs(len(left_text) - len(right_text)) > 40:
-                    continue
-                if left_prefix[:18] != right_text[:18] and left_prefix[-18:] != right_text[:36][-18:]:
-                    continue
-                similarity = SequenceMatcher(None, left_text, right_text).ratio()
-                if similarity >= NEAR_DUPLICATE_SIMILARITY:
-                    near_duplicate_ids.add(left_id)
-                    near_duplicate_ids.add(right_id)
-        return near_duplicate_ids

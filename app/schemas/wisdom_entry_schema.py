@@ -18,6 +18,7 @@ class WisdomEntryBase(BaseModel):
     translation: str | None = None
     commentary: str | None = None
     extracted_principle: str | None = None
+    distilled_wisdom: str | None = None
     emotional_tags: list[str] = Field(default_factory=list)
     philosophical_tags: list[str] = Field(default_factory=list)
     use_cases: list[str] = Field(default_factory=list)

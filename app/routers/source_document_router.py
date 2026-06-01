@@ -39,6 +39,7 @@ from app.services.quality_service import QualityService
 from app.services.parsers.gita_parser_service import GitaParserService
 from app.services.principle_quality_service import PrincipleQualityService
 from app.services.training_dataset_audit_service import TrainingDatasetAuditService
+from app.services.wisdom_distillation_service import WisdomDistillationService
 
 source_document_router = APIRouter(prefix="/source-documents", tags=["Source Documents"])
 
@@ -474,6 +475,56 @@ async def extract_wisdom_principles(
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Unable to refine wisdom principles.",
+        ) from exc
+
+    refreshed_result = await db.execute(
+        select(WisdomEntry)
+        .where(WisdomEntry.source_document_id == document_id)
+        .order_by(WisdomEntry.created_at.desc())
+    )
+    return list(refreshed_result.scalars().all())
+
+
+@source_document_router.post(
+    "/{document_id}/wisdom-entries/distill",
+    response_model=list[WisdomEntryRead],
+)
+async def distill_wisdom_entries(
+    document_id: int,
+    db: AsyncSession = Depends(get_db_session),
+) -> list[WisdomEntry]:
+    """Generate universal distilled wisdom for each stored wisdom entry."""
+
+    source_document = await db.get(SourceDocument, document_id)
+    if source_document is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Source document with id={document_id} was not found.",
+        )
+
+    result = await db.execute(
+        select(WisdomEntry)
+        .where(WisdomEntry.source_document_id == document_id)
+        .order_by(WisdomEntry.created_at.asc())
+    )
+    wisdom_entries = list(result.scalars().all())
+    if not wisdom_entries:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Wisdom entries for source document id={document_id} were not found.",
+        )
+
+    distillation_service = WisdomDistillationService()
+    for wisdom_entry in wisdom_entries:
+        wisdom_entry.distilled_wisdom = distillation_service.distill_entry(wisdom_entry)
+
+    try:
+        await db.commit()
+    except SQLAlchemyError as exc:
+        await db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Unable to distill wisdom entries.",
         ) from exc
 
     refreshed_result = await db.execute(
