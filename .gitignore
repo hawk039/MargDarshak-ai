@@ -7,3 +7,6 @@ exports/
 storage/
 *.db
 .DS_Store
+
+training/adapters/
+training/outputs/
