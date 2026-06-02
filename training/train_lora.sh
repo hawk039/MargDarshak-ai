@@ -54,7 +54,7 @@ fi
 print_info "target base model: $BASE_MODEL_NOTE"
 print_info "MLX runtime model: $MODEL_ID"
 print_info "warming model cache; this will download the model if it is missing"
-if ! "$PYTHON_BIN" -m mlx_lm.generate --model "$MODEL_ID" --prompt "ping" --max-tokens 1 >/dev/null 2>&1; then
+if ! "$PYTHON_BIN" -m mlx_lm generate --model "$MODEL_ID" --prompt "ping" --max-tokens 1 >/dev/null 2>&1; then
   print_error "model warm-up failed"
   print_error "if this is the first run, confirm network access and Hugging Face availability"
   exit 1
@@ -67,7 +67,7 @@ print_info "adapter output: $ADAPTER_DIR"
 print_info "log file: $LOG_FILE"
 
 set +e
-"$PYTHON_BIN" -m mlx_lm.lora --config "$CONFIG_FILE" 2>&1 | tee "$LOG_FILE"
+"$PYTHON_BIN" -m mlx_lm lora --config "$CONFIG_FILE" 2>&1 | tee "$LOG_FILE"
 TRAIN_EXIT=${PIPESTATUS[0]}
 set -e
 

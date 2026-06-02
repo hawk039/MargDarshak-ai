@@ -86,6 +86,13 @@ What the script does:
 * starts LoRA training with conservative MLX-LM settings
 * writes logs under `training/outputs/`
 
+The scripts use the current MLX-LM CLI style:
+
+```bash
+python -m mlx_lm generate ...
+python -m mlx_lm lora ...
+```
+
 The current config is:
 
 * batch size `1`
