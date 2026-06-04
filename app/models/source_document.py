@@ -42,3 +42,8 @@ class SourceDocument(Base):
         back_populates="source_document",
         cascade="all, delete-orphan",
     )
+    canonical_passages = relationship(
+        "CanonicalPassage",
+        back_populates="source_document",
+        cascade="all, delete-orphan",
+    )

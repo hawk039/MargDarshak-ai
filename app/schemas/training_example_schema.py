@@ -13,7 +13,7 @@ class TrainingExampleBase(BaseModel):
     assistant_response: str
     tone: str | None = Field(default=None, max_length=100)
     safety_category: str | None = Field(default=None, max_length=100)
-    source_references: list[str] = Field(default_factory=list)
+    source_references: list[dict[str, str | None] | str] = Field(default_factory=list)
     approved_for_finetune: bool = False
     dataset_quality_score: float | None = Field(default=None, ge=0.0, le=100.0)
     dataset_status: str = Field(default="needs_review", max_length=50)

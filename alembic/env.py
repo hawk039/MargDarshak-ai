@@ -10,6 +10,7 @@ from sqlalchemy.ext.asyncio import async_engine_from_config
 from app.core.config import get_settings
 from app.core.database import Base
 from app.models import (  # noqa: F401
+    canonical_passage,
     canonical_verse,
     document_chunk,
     extracted_document_text,

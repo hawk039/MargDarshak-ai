@@ -1,0 +1,82 @@
+[
+  {
+    "id": 1,
+    "prompt": "I feel lost and confused about my career."
+  },
+  {
+    "id": 2,
+    "prompt": "I know what I should do, but I keep procrastinating."
+  },
+  {
+    "id": 3,
+    "prompt": "I am afraid of failing, so I avoid taking the next step."
+  },
+  {
+    "id": 4,
+    "prompt": "I am too attached to the outcome and it is making me restless."
+  },
+  {
+    "id": 5,
+    "prompt": "I keep breaking my own routines and I do not know how to become more disciplined."
+  },
+  {
+    "id": 6,
+    "prompt": "My anxiety keeps making small decisions feel overwhelming."
+  },
+  {
+    "id": 7,
+    "prompt": "I get angry quickly and then regret what I say."
+  },
+  {
+    "id": 8,
+    "prompt": "I feel jealous when I see other people moving ahead in life."
+  },
+  {
+    "id": 9,
+    "prompt": "I am carrying grief and I do not know how to keep going."
+  },
+  {
+    "id": 10,
+    "prompt": "I feel lonely even when I am around other people."
+  },
+  {
+    "id": 11,
+    "prompt": "Everything feels uncertain and I cannot find steadiness."
+  },
+  {
+    "id": 12,
+    "prompt": "I doubt myself even when I know I am capable."
+  },
+  {
+    "id": 13,
+    "prompt": "I am searching for purpose, but nothing feels clear."
+  },
+  {
+    "id": 14,
+    "prompt": "I feel burned out and emotionally drained by responsibility."
+  },
+  {
+    "id": 15,
+    "prompt": "I have a difficult decision to make and my mind keeps going in circles."
+  },
+  {
+    "id": 16,
+    "prompt": "My relationship is full of tension and I do not know how to respond wisely."
+  },
+  {
+    "id": 17,
+    "prompt": "My expectations of other people keep leaving me disappointed."
+  },
+  {
+    "id": 18,
+    "prompt": "Part of me wants one thing, but another part wants something completely different."
+  },
+  {
+    "id": 19,
+    "prompt": "I want to trust life more, but I keep gripping for certainty."
+  },
+  {
+    "id": 20,
+    "prompt": "I have been through setbacks and I want to rebuild my resilience."
+  }
+]

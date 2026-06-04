@@ -1,6 +1,7 @@
 """Pydantic schemas used by the API layer."""
 """Pydantic schema modules."""
 
+from app.schemas.canonical_passage_schema import CanonicalPassageRead
 from app.schemas.canonical_verse_schema import CanonicalVerseRead
 from app.schemas.document_chunk_schema import DocumentChunkRead
 from app.schemas.quality_review_schema import (
@@ -19,6 +20,7 @@ __all__ = [
     "SourceDocumentCreate",
     "SourceDocumentRead",
     "ExtractedDocumentTextRead",
+    "CanonicalPassageRead",
     "CanonicalVerseRead",
     "DocumentChunkRead",
     "QualityReviewRead",

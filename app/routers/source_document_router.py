@@ -6,6 +6,7 @@ from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db_session
+from app.models.canonical_passage import CanonicalPassage
 from app.models.canonical_verse import CanonicalVerse
 from app.models.document_chunk import DocumentChunk
 from app.models.extracted_document_text import ExtractedDocumentText
@@ -17,6 +18,7 @@ from app.pipelines.chunk_document_pipeline import ChunkDocumentPipeline
 from app.pipelines.extract_wisdom_pipeline import ExtractWisdomPipeline
 from app.pipelines.generate_training_examples_pipeline import GenerateTrainingExamplesPipeline
 from app.pipelines.ingest_document_pipeline import IngestDocumentPipeline
+from app.schemas.canonical_passage_schema import CanonicalPassageRead
 from app.schemas.canonical_verse_schema import CanonicalVerseRead
 from app.schemas.document_chunk_schema import DocumentChunkRead
 from app.schemas.quality_review_schema import (
@@ -39,6 +41,16 @@ from app.services.quality_service import QualityService
 from app.services.parsers.gita_parser_service import GitaParserService
 from app.services.principle_quality_service import PrincipleQualityService
 from app.services.training_dataset_audit_service import TrainingDatasetAuditService
+from app.services.upanishad_parser_service import UpanishadParserService
+from app.services.upanishad_training_example_generation_service import (
+    UpanishadTrainingExampleGenerationService,
+)
+from app.services.upanishad_training_dataset_audit_service import (
+    UpanishadTrainingDatasetAuditService,
+)
+from app.services.upanishad_wisdom_distillation_service import UpanishadWisdomDistillationService
+from app.services.upanishad_wisdom_quality_service import UpanishadWisdomQualityService
+from app.services.upanishad_wisdom_extraction_service import UpanishadWisdomExtractionService
 from app.services.wisdom_distillation_service import WisdomDistillationService
 
 source_document_router = APIRouter(prefix="/source-documents", tags=["Source Documents"])
@@ -178,6 +190,288 @@ async def get_source_document_text(
             detail=f"Extracted text for source document id={document_id} was not found.",
         )
     return extracted_text
+
+
+@source_document_router.post(
+    "/{document_id}/extract-upanishad-passages",
+    response_model=list[CanonicalPassageRead],
+)
+async def extract_upanishad_passages(
+    document_id: int,
+    db: AsyncSession = Depends(get_db_session),
+) -> list[CanonicalPassage]:
+    """Extract pilot Upanishad canonical passages for Kena, Katha, and Mundaka."""
+
+    source_document = await db.get(SourceDocument, document_id)
+    if source_document is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Source document with id={document_id} was not found.",
+        )
+
+    parser_service = UpanishadParserService()
+    try:
+        parsed_passages = parser_service.parse_document(source_document)
+    except FileNotFoundError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=str(exc),
+        ) from exc
+    except RuntimeError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="Unable to read the source PDF for Upanishad passage extraction.",
+        ) from exc
+
+    if not parsed_passages:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="No Upanishad pilot passages could be extracted from the source document.",
+        )
+
+    await db.execute(delete(CanonicalPassage).where(CanonicalPassage.source_document_id == document_id))
+
+    canonical_passages = [
+        CanonicalPassage(
+            source_document_id=document_id,
+            upanishad_name=parsed_passage.upanishad_name,
+            chapter=parsed_passage.chapter,
+            section=parsed_passage.section,
+            passage_number=parsed_passage.passage_number,
+            speaker=parsed_passage.speaker,
+            original_text=parsed_passage.original_text,
+            english_translation=parsed_passage.english_translation,
+            commentary_text=parsed_passage.commentary_text,
+            page_reference=parsed_passage.page_reference,
+            is_valid=parsed_passage.is_valid,
+        )
+        for parsed_passage in parsed_passages
+    ]
+    db.add_all(canonical_passages)
+    try:
+        await db.commit()
+    except SQLAlchemyError as exc:
+        await db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Unable to persist canonical passages.",
+        ) from exc
+
+    result = await db.execute(
+        select(CanonicalPassage)
+        .where(CanonicalPassage.source_document_id == document_id)
+        .order_by(CanonicalPassage.upanishad_name.asc(), CanonicalPassage.id.asc())
+    )
+    return list(result.scalars().all())
+
+
+@source_document_router.get(
+    "/{document_id}/upanishad-passages",
+    response_model=list[CanonicalPassageRead],
+)
+async def list_upanishad_passages(
+    document_id: int,
+    db: AsyncSession = Depends(get_db_session),
+) -> list[CanonicalPassage]:
+    """Return extracted Upanishad pilot passages for a source document."""
+
+    source_document = await db.get(SourceDocument, document_id)
+    if source_document is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Source document with id={document_id} was not found.",
+        )
+
+    result = await db.execute(
+        select(CanonicalPassage)
+        .where(CanonicalPassage.source_document_id == document_id)
+        .order_by(CanonicalPassage.upanishad_name.asc(), CanonicalPassage.id.asc())
+    )
+    return list(result.scalars().all())
+
+
+@source_document_router.post(
+    "/{document_id}/upanishad-wisdom-entries/generate",
+    response_model=list[WisdomEntryRead],
+)
+async def generate_upanishad_wisdom_entries(
+    document_id: int,
+    db: AsyncSession = Depends(get_db_session),
+) -> list[WisdomEntry]:
+    """Generate wisdom entries from valid canonical Upanishad passages only."""
+
+    source_document = await db.get(SourceDocument, document_id)
+    if source_document is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Source document with id={document_id} was not found.",
+        )
+
+    result = await db.execute(
+        select(CanonicalPassage)
+        .where(CanonicalPassage.source_document_id == document_id)
+        .where(CanonicalPassage.is_valid.is_(True))
+        .order_by(CanonicalPassage.upanishad_name.asc(), CanonicalPassage.id.asc())
+    )
+    canonical_passages = list(result.scalars().all())
+    if not canonical_passages:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Valid Upanishad passages for source document id={document_id} were not found.",
+        )
+
+    extraction_service = UpanishadWisdomExtractionService()
+    extracted_entries = extraction_service.extract_entries(canonical_passages)
+    if not extracted_entries:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="No Upanishad wisdom entries could be generated from the stored passages.",
+        )
+
+    await db.execute(delete(WisdomEntry).where(WisdomEntry.source_document_id == document_id))
+    wisdom_entries = [
+        WisdomEntry(
+            source_document_id=entry.source_document_id,
+            book_title=entry.book_title,
+            chapter=entry.chapter,
+            section=entry.section,
+            verse_number=entry.verse_number,
+            original_text=entry.original_text,
+            translation=entry.translation,
+            commentary=entry.commentary,
+            extracted_principle=entry.extracted_principle,
+            emotional_tags=entry.emotional_tags,
+            philosophical_tags=entry.philosophical_tags,
+            use_cases=entry.use_cases,
+            confidence_score=entry.confidence_score,
+        )
+        for entry in extracted_entries
+    ]
+    db.add_all(wisdom_entries)
+    try:
+        await db.commit()
+    except SQLAlchemyError as exc:
+        await db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Unable to persist Upanishad wisdom entries.",
+        ) from exc
+
+    refreshed_result = await db.execute(
+        select(WisdomEntry)
+        .where(WisdomEntry.source_document_id == document_id)
+        .order_by(WisdomEntry.book_title.asc(), WisdomEntry.id.asc())
+    )
+    return list(refreshed_result.scalars().all())
+
+
+@source_document_router.post(
+    "/{document_id}/upanishad-wisdom-entries/distill",
+    response_model=list[WisdomEntryRead],
+)
+async def distill_upanishad_wisdom_entries(
+    document_id: int,
+    db: AsyncSession = Depends(get_db_session),
+) -> list[WisdomEntry]:
+    """Generate Upanishad-specific distilled wisdom for a source document."""
+
+    source_document = await db.get(SourceDocument, document_id)
+    if source_document is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Source document with id={document_id} was not found.",
+        )
+
+    result = await db.execute(
+        select(WisdomEntry)
+        .where(WisdomEntry.source_document_id == document_id)
+        .order_by(WisdomEntry.book_title.asc(), WisdomEntry.id.asc())
+    )
+    wisdom_entries = list(result.scalars().all())
+    if not wisdom_entries:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Upanishad wisdom entries for source document id={document_id} were not found.",
+        )
+
+    distillation_service = UpanishadWisdomDistillationService()
+    distilled_results = distillation_service.distill_entries(wisdom_entries)
+    for wisdom_entry in wisdom_entries:
+        distilled_wisdom, confidence_score = distilled_results.get(
+            wisdom_entry.id,
+            (None, 60.0),
+        )
+        wisdom_entry.distilled_wisdom = distilled_wisdom
+        wisdom_entry.confidence_score = confidence_score
+
+    try:
+        await db.commit()
+    except SQLAlchemyError as exc:
+        await db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Unable to distill Upanishad wisdom entries.",
+        ) from exc
+
+    refreshed_result = await db.execute(
+        select(WisdomEntry)
+        .where(WisdomEntry.source_document_id == document_id)
+        .order_by(WisdomEntry.book_title.asc(), WisdomEntry.id.asc())
+    )
+    return list(refreshed_result.scalars().all())
+
+
+@source_document_router.post(
+    "/{document_id}/upanishad-wisdom-quality/refine",
+    response_model=list[WisdomEntryRead],
+)
+async def refine_upanishad_wisdom_quality(
+    document_id: int,
+    db: AsyncSession = Depends(get_db_session),
+) -> list[WisdomEntry]:
+    """Evaluate and persist Upanishad distilled wisdom quality for a source document."""
+
+    source_document = await db.get(SourceDocument, document_id)
+    if source_document is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Source document with id={document_id} was not found.",
+        )
+
+    result = await db.execute(
+        select(WisdomEntry)
+        .where(WisdomEntry.source_document_id == document_id)
+        .order_by(WisdomEntry.book_title.asc(), WisdomEntry.id.asc())
+    )
+    wisdom_entries = list(result.scalars().all())
+    if not wisdom_entries:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Upanishad wisdom entries for source document id={document_id} were not found.",
+        )
+
+    quality_service = UpanishadWisdomQualityService()
+    for wisdom_entry in wisdom_entries:
+        quality_result = quality_service.evaluate_entry(wisdom_entry)
+        wisdom_entry.principle_quality_score = quality_result.principle_quality_score
+        wisdom_entry.principle_status = quality_result.principle_status
+        wisdom_entry.confidence_score = quality_result.confidence_score
+
+    try:
+        await db.commit()
+    except SQLAlchemyError as exc:
+        await db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Unable to refine Upanishad wisdom quality.",
+        ) from exc
+
+    refreshed_result = await db.execute(
+        select(WisdomEntry)
+        .where(WisdomEntry.source_document_id == document_id)
+        .order_by(WisdomEntry.book_title.asc(), WisdomEntry.id.asc())
+    )
+    return list(refreshed_result.scalars().all())
 
 
 @source_document_router.post(
@@ -733,6 +1027,139 @@ async def list_source_document_training_examples(
         .order_by(TrainingExample.created_at.desc())
     )
     return list(result.scalars().all())
+
+
+@source_document_router.post(
+    "/{document_id}/upanishad-training-examples/generate",
+    response_model=list[TrainingExampleRead],
+)
+async def generate_upanishad_training_examples(
+    document_id: int,
+    db: AsyncSession = Depends(get_db_session),
+) -> list[TrainingExample]:
+    """Generate Upanishad-only training examples from approved distilled wisdom."""
+
+    source_document = await db.get(SourceDocument, document_id)
+    if source_document is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Source document with id={document_id} was not found.",
+        )
+
+    result = await db.execute(
+        select(WisdomEntry)
+        .where(WisdomEntry.source_document_id == document_id)
+        .where(WisdomEntry.principle_status == "approved")
+        .where(WisdomEntry.principle_quality_score >= 80)
+        .order_by(WisdomEntry.book_title.asc(), WisdomEntry.id.asc())
+    )
+    wisdom_entries = [
+        entry
+        for entry in result.scalars().all()
+        if entry.distilled_wisdom
+    ]
+    if not wisdom_entries:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="No approved Upanishad distilled wisdom entries were found for training example generation.",
+        )
+
+    service = UpanishadTrainingExampleGenerationService()
+    eligible_wisdom_entries = [entry for entry in wisdom_entries if service.is_eligible(entry)]
+    if not eligible_wisdom_entries:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="Approved Upanishad wisdom entries exist, but none passed training-example eligibility checks.",
+        )
+
+    wisdom_entry_ids = [entry.id for entry in eligible_wisdom_entries]
+    await db.execute(
+        delete(TrainingExample).where(TrainingExample.wisdom_entry_id.in_(wisdom_entry_ids))
+    )
+
+    generation_result = service.generate_examples(eligible_wisdom_entries)
+    if not generation_result.generated_examples:
+        await db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="Upanishad training-example generation produced no usable examples.",
+        )
+
+    db.add_all(generation_result.generated_examples)
+    try:
+        await db.commit()
+    except SQLAlchemyError as exc:
+        await db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Unable to persist Upanishad training examples.",
+        ) from exc
+
+    refreshed_result = await db.execute(
+        select(TrainingExample)
+        .join(WisdomEntry, TrainingExample.wisdom_entry_id == WisdomEntry.id)
+        .where(WisdomEntry.source_document_id == document_id)
+        .order_by(TrainingExample.id.asc())
+    )
+    return list(refreshed_result.scalars().all())
+
+
+@source_document_router.post(
+    "/{document_id}/upanishad-training-dataset/audit",
+    response_model=list[TrainingExampleRead],
+)
+async def audit_upanishad_training_dataset(
+    document_id: int,
+    db: AsyncSession = Depends(get_db_session),
+) -> list[TrainingExample]:
+    """Audit Upanishad training examples for export readiness."""
+
+    source_document = await db.get(SourceDocument, document_id)
+    if source_document is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Source document with id={document_id} was not found.",
+        )
+
+    result = await db.execute(
+        select(TrainingExample)
+        .join(WisdomEntry, TrainingExample.wisdom_entry_id == WisdomEntry.id)
+        .where(WisdomEntry.source_document_id == document_id)
+        .order_by(TrainingExample.id.asc())
+    )
+    training_examples = list(result.scalars().all())
+    if not training_examples:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="No Upanishad training examples were found for audit.",
+        )
+
+    audit_service = UpanishadTrainingDatasetAuditService()
+    audit_results = audit_service.audit_examples(training_examples)
+    result_by_id = {result.training_example_id: result for result in audit_results}
+
+    for training_example in training_examples:
+        audit_result = result_by_id[training_example.id]
+        training_example.dataset_quality_score = audit_result.dataset_quality_score
+        training_example.dataset_status = audit_result.dataset_status
+        training_example.dataset_audit_issues = audit_result.issues
+
+    try:
+        await db.commit()
+    except SQLAlchemyError as exc:
+        await db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Unable to audit Upanishad training examples.",
+        ) from exc
+
+    refreshed_result = await db.execute(
+        select(TrainingExample)
+        .join(WisdomEntry, TrainingExample.wisdom_entry_id == WisdomEntry.id)
+        .where(WisdomEntry.source_document_id == document_id)
+        .order_by(TrainingExample.id.asc())
+    )
+    return list(refreshed_result.scalars().all())
 
 
 @source_document_router.post(
