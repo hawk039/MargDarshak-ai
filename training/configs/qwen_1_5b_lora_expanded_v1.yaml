@@ -1,0 +1,15 @@
+model: mlx-community/Qwen2.5-1.5B-Instruct-4bit
+train: true
+data: training/data
+adapter_path: training/adapters/marg_darshak_expanded_v1_lora
+batch_size: 1
+grad_accumulation_steps: 4
+learning_rate: 1.0e-5
+iters: 220
+num_layers: 4
+fine_tune_type: lora
+grad_checkpoint: true
+steps_per_report: 10
+steps_per_eval: 20
+save_every: 20
+mask_prompt: true
